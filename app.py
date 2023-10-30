@@ -95,6 +95,16 @@ class MainHandler(tornado.web.RequestHandler):
         self.write(generate_latest(REGISTRY).decode("utf-8"))
         self.set_header("Content-Type", "text; charset=utf-8")
 
+def train_model(initial_run=False, data_queue=None):
+    global PREDICTOR_MODEL_LIST
+    parallelism = min(Configuration.parallelism, cpu_count())
+    _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
+    training_partial = partial(train_individual_model, initial_run=initial_run)
+    with Pool(parallelism) as p:
+        result = p.map(training_partial, PREDICTOR_MODEL_LIST)
+    PREDICTOR_MODEL_LIST = result
+    data_queue.put(PREDICTOR_MODEL_LIST)
+
 
 def make_app(data_queue):
     _LOGGER.info("Initializing Tornado Web App")

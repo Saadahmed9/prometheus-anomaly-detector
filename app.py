@@ -1,4 +1,4 @@
-"""docstring for packages."""
+import asyncio
 import time
 import os
 import logging
@@ -22,7 +22,6 @@ METRICS_LIST = Configuration.metrics_list
 
 # list of ModelPredictor Objects shared between processes
 PREDICTOR_MODEL_LIST = list()
-
 
 pc = PrometheusConnect(
     url=Configuration.prometheus_url,
@@ -57,10 +56,7 @@ for predictor in PREDICTOR_MODEL_LIST:
 
 
 class MainHandler(tornado.web.RequestHandler):
-    """Tornado web request handler."""
-
     def initialize(self, data_queue):
-        """Check if new predicted values are available in the queue before the get request."""
         try:
             model_list = data_queue.get_nowait()
             self.settings["model_list"] = model_list
@@ -68,11 +64,7 @@ class MainHandler(tornado.web.RequestHandler):
             pass
 
     async def get(self):
-        """Fetch and publish metric values asynchronously."""
-        # update metric value on every request and publish the metric
         for predictor_model in self.settings["model_list"]:
-            # get the current metric value so that it can be compared with the
-            # predicted values
             current_metric_value = Metric(
                 pc.get_current_metric_value(
                     metric_name=predictor_model.metric.metric_name,
@@ -83,14 +75,11 @@ class MainHandler(tornado.web.RequestHandler):
             metric_name = predictor_model.metric.metric_name
             prediction = predictor_model.predict_value(datetime.now())
 
-            # Check for all the columns available in the prediction
-            # and publish the values for each of them
             for column_name in list(prediction.columns):
                 GAUGE_DICT[metric_name].labels(
                     **predictor_model.metric.label_config, value_type=column_name
                 ).set(prediction[column_name][0])
 
-            # Calculate for an anomaly (can be different for different models)
             anomaly = 1
             if (
                 current_metric_value.metric_values["y"][0] < prediction["yhat_upper"][0]
@@ -99,8 +88,6 @@ class MainHandler(tornado.web.RequestHandler):
             ):
                 anomaly = 0
 
-            # create a new time series that has value_type=anomaly
-            # this value is 1 if an anomaly is found 0 if not
             GAUGE_DICT[metric_name].labels(
                 **predictor_model.metric.label_config, value_type="anomaly"
             ).set(anomaly)
@@ -110,7 +97,6 @@ class MainHandler(tornado.web.RequestHandler):
 
 
 def make_app(data_queue):
-    """Initialize the tornado web app."""
     _LOGGER.info("Initializing Tornado Web App")
     return tornado.web.Application(
         [
@@ -118,6 +104,26 @@ def make_app(data_queue):
             (r"/", MainHandler, dict(data_queue=data_queue)),
         ]
     )
+
+async def start_tornado_app(app, predicted_model_queue):
+    app.listen(8080)
+    while True:
+        try:
+            model_list = predicted_model_queue.get_nowait()
+            app.settings["model_list"] = model_list
+        except EmptyQueueException:
+            pass
+        await asyncio.sleep(1)
+
+async def train_model_periodically(predicted_model_queue):
+    global PREDICTOR_MODEL_LIST
+    parallelism = min(Configuration.parallelism, cpu_count())
+    _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
+    training_partial = partial(train_individual_model, initial_run=False)
+    with Pool(parallelism) as p:
+        result = p.map(training_partial, PREDICTOR_MODEL_LIST)
+    PREDICTOR_MODEL_LIST = result
+    predicted_model_queue.put(PREDICTOR_MODEL_LIST)
 
 def train_individual_model(predictor_model, initial_run):
     metric_to_predict = predictor_model.metric
@@ -133,7 +139,6 @@ def train_individual_model(predictor_model, initial_run):
             datetime.now() - Configuration.rolling_training_window_size
         )
 
-    # Download new metric data from prometheus
     new_metric_data = pc.get_metric_range_data(
         metric_name=metric_to_predict.metric_name,
         label_config=metric_to_predict.label_config,
@@ -141,7 +146,6 @@ def train_individual_model(predictor_model, initial_run):
         end_time=datetime.now(),
     )[0]
 
-    # Train the new model
     start_time = datetime.now()
     predictor_model.train(
             new_metric_data, Configuration.retraining_interval_minutes)
@@ -154,43 +158,17 @@ def train_individual_model(predictor_model, initial_run):
     )
     return predictor_model
 
-def train_model(initial_run=False, data_queue=None):
-    """Train the machine learning model."""
-    global PREDICTOR_MODEL_LIST
-    parallelism = min(Configuration.parallelism, cpu_count())
-    _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
-    training_partial = partial(train_individual_model, initial_run=initial_run)
-    with Pool(parallelism) as p:
-        result = p.map(training_partial, PREDICTOR_MODEL_LIST)
-    PREDICTOR_MODEL_LIST = result
-    data_queue.put(PREDICTOR_MODEL_LIST)
-
-
-if __name__ == "__main__":
-    # Queue to share data between the tornado server and the model training
+async def main():
     predicted_model_queue = Queue()
 
-    # Initial run to generate metrics, before they are exposed
     train_model(initial_run=True, data_queue=predicted_model_queue)
 
-    # Set up the tornado web app
     app = make_app(predicted_model_queue)
-    app.listen(8080)
-    server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
-    # Start up the server to expose the metrics.
-    server_process.start()
 
-    # Schedule the model training
-    schedule.every(Configuration.retraining_interval_minutes).minutes.do(
-        train_model, initial_run=False, data_queue=predicted_model_queue
-    )
-    _LOGGER.info(
-        "Will retrain model every %s minutes", Configuration.retraining_interval_minutes
+    await asyncio.gather(
+        start_tornado_app(app, predicted_model_queue),
+        train_model_periodically(predicted_model_queue),
     )
 
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-    # join the server process in case the main process ends
-    server_process.join()
+if __name__ == "__main__":
+    asyncio.run(main())

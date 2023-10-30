@@ -99,7 +99,7 @@ def train_model(initial_run=False, data_queue=None):
     global PREDICTOR_MODEL_LIST
     parallelism = min(Configuration.parallelism, cpu_count())
     _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
-    training_partial = partial(train_individual_model, initial_run=initial_run)
+    training_partial = partial(train_individual_model, initial_run=False)
     with Pool(parallelism) as p:
         result = p.map(training_partial, PREDICTOR_MODEL_LIST)
     PREDICTOR_MODEL_LIST = result
@@ -169,12 +169,15 @@ def train_individual_model(predictor_model, initial_run):
     return predictor_model
 
 async def main():
+    
     predicted_model_queue = Queue()
-
-    train_model(initial_run=True, data_queue=predicted_model_queue)
-
+    # Initial run to generate metrics, before they are exposed
+    train_model(data_queue=predicted_model_queue)
     app = make_app(predicted_model_queue)
-
+    # Schedule the model training periodically
+    schedule.every(Configuration.retraining_interval_minutes).minutes.do(
+        train_model, data_queue=predicted_model_queue
+    )
     await asyncio.gather(
         start_tornado_app(app, predicted_model_queue),
         train_model_periodically(predicted_model_queue),

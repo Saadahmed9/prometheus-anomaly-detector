@@ -188,12 +188,19 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     while True:
+        app = make_app(predicted_model_queue)
+        app.listen(8080)
+
+        # Register the signal handler
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        
         # Initial run to generate metrics, before they are exposed
+
+        
         train_model(initial_run=True, data_queue=predicted_model_queue)
 
         # Start up the server to expose the metrics.
-        server_process.start()
-
+        tornado.ioloop.IOLoop.current().start()
         # Schedule the model training
         schedule.every(Configuration.retraining_interval_minutes).minutes.do(
             train_model, initial_run=False, data_queue=predicted_model_queue
@@ -204,21 +211,21 @@ if __name__ == "__main__":
         )
 
         # Wait for the completion of retraining cycles
+        cycle_counter += 1
+        
         for _ in range(RETRAIN_CYCLES_BEFORE_RESTART):
             schedule.run_pending()
             time.sleep(1)
 
-        # Stop the server process after completing cycles
-        server_process.terminate()
-        server_process.join()
-
-        # Increment the cycle counter
-        cycle_counter += 1
-
-        # Check if the restart condition is met
         if cycle_counter == RETRAIN_CYCLES_BEFORE_RESTART:
+            
             # Reset the counter
             cycle_counter = 0
+            # Close the I/O loop for a clean restart
+            tornado.ioloop.IOLoop.current().close()
         else:
-            # Continue to the next iteration of the loop
+        # Continue to the next iteration of the loop
             continue
+
+
+

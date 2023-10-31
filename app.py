@@ -159,7 +159,7 @@ def train_individual_model(predictor_model, initial_run):
     )
     
     return predictor_model
-train_model_call_count = 0
+
 def train_model(initial_run=False, data_queue=None):
     """Train the machine learning model."""
     _LOGGER.info("Training models.")
@@ -180,7 +180,8 @@ if __name__ == "__main__":
     # Queue to share data between the tornado server and the model training
     _LOGGER.info("Starting the main execution block.")
     predicted_model_queue = Queue()
-
+    global train_model_call_count
+    train_model_call_count = 0
     # Initial run to generate metrics, before they are exposed
     train_model(initial_run=True, data_queue=predicted_model_queue)
 

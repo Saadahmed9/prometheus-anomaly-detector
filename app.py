@@ -2,7 +2,6 @@
 import time
 import os
 import logging
-import signal
 from datetime import datetime
 from multiprocessing import Pool, Process, Queue
 from multiprocessing import cpu_count
@@ -61,16 +60,19 @@ class MainHandler(tornado.web.RequestHandler):
     """Tornado web request handler."""
 
     def initialize(self, data_queue):
+        _LOGGER.info("Initializing MainHandler.")
         """Check if new predicted values are available in the queue before the get request."""
         try:
             model_list = data_queue.get_nowait()
             self.settings["model_list"] = model_list
         except EmptyQueueException:
+            _LOGGER.warning("Empty queue.")
             pass
 
     async def get(self):
         """Fetch and publish metric values asynchronously."""
         # update metric value on every request and publish the metric
+        _LOGGER.info("Handling GET request.")
         for predictor_model in self.settings["model_list"]:
             # get the current metric value so that it can be compared with the
             # predicted values
@@ -108,6 +110,7 @@ class MainHandler(tornado.web.RequestHandler):
 
         self.write(generate_latest(REGISTRY).decode("utf-8"))
         self.set_header("Content-Type", "text; charset=utf-8")
+        _LOGGER.info("Success get request")
 
 
 def make_app(data_queue):
@@ -121,6 +124,7 @@ def make_app(data_queue):
     )
 
 def train_individual_model(predictor_model, initial_run):
+    _LOGGER.info(f"Training model for {predictor_model.metric.metric_name}.")
     metric_to_predict = predictor_model.metric
     pc = PrometheusConnect(
     url=Configuration.prometheus_url,
@@ -153,71 +157,52 @@ def train_individual_model(predictor_model, initial_run):
         metric_to_predict.metric_name,
         metric_to_predict.label_config,
     )
+    
     return predictor_model
 
 def train_model(initial_run=False, data_queue=None):
     """Train the machine learning model."""
+    _LOGGER.info("Training models.")
     global PREDICTOR_MODEL_LIST
     parallelism = min(Configuration.parallelism, cpu_count())
     _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
     training_partial = partial(train_individual_model, initial_run=initial_run)
     with Pool(parallelism) as p:
         result = p.map(training_partial, PREDICTOR_MODEL_LIST)
+    _LOGGER.info("Model training completed.")
     PREDICTOR_MODEL_LIST = result
     data_queue.put(PREDICTOR_MODEL_LIST)
 
-def shutdown_handler(signum, frame):
-    _LOGGER.info("Received signal %s. Shutting down...", signum)
-    server_process.terminate()
-    server_process.join()
-    sys.exit(0)
 
-RETRAIN_CYCLES_BEFORE_RESTART = 3
 if __name__ == "__main__":
     # Queue to share data between the tornado server and the model training
+     _LOGGER.info("Starting the main execution block.")
     predicted_model_queue = Queue()
 
-    cycle_counter = 0
+    # Initial run to generate metrics, before they are exposed
+    train_model(initial_run=True, data_queue=predicted_model_queue)
 
+    # Set up the tornado web app
+     _LOGGER.info("Entering the Tornado web app setup.")
+    app = make_app(predicted_model_queue)
+    app.listen(8080)
+    server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
+    # Start up the server to expose the metrics.
+    server_process.start()
+
+    # Schedule the model training
+    schedule.every(Configuration.retraining_interval_minutes).minutes.do(
+        train_model, initial_run=False, data_queue=predicted_model_queue
+    )
+    _LOGGER.info(
+        "Will retrain model every %s minutes", Configuration.retraining_interval_minutes
+    )
+    _LOGGER.info("Entering the model training loop.")
     while True:
-        app = make_app(predicted_model_queue)
-        app.listen(8080)
+        schedule.run_pending()
+        time.sleep(1)
 
-        # Register the signal handler
-        signal.signal(signal.SIGTERM, shutdown_handler)
-        
-        # Initial run to generate metrics, before they are exposed
-
-        
-        train_model(initial_run=True, data_queue=predicted_model_queue)
-
-        # Start up the server to expose the metrics.
-        tornado.ioloop.IOLoop.current().start()
-        # Schedule the model training
-        schedule.every(Configuration.retraining_interval_minutes).minutes.do(
-            train_model, initial_run=False, data_queue=predicted_model_queue
-        )
-        _LOGGER.info(
-            "Will retrain model every %s minutes",
-            Configuration.retraining_interval_minutes,
-        )
-
-        # Wait for the completion of retraining cycles
-        cycle_counter += 1
-        
-        for _ in range(RETRAIN_CYCLES_BEFORE_RESTART):
-            schedule.run_pending()
-            time.sleep(1)
-
-        if cycle_counter == RETRAIN_CYCLES_BEFORE_RESTART:
-            
-            # Reset the counter
-            cycle_counter = 0
-            # Close the I/O loop for a clean restart
-            tornado.ioloop.IOLoop.current().close()
-        else:
-        # Continue to the next iteration of the loop
-            continue
-
-
-
+    # join the server process in case the main process ends
+    server_process.join()
+    
+    _LOGGER.info("Exiting the main execution block.")

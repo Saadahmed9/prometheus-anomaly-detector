@@ -159,10 +159,12 @@ def train_individual_model(predictor_model, initial_run):
     )
     
     return predictor_model
-
+train_model_call_count = 0
 def train_model(initial_run=False, data_queue=None):
     """Train the machine learning model."""
     _LOGGER.info("Training models.")
+    train_model_call_count += 1  # Increment the counter
+    _LOGGER.info(f"Train model called {train_model_call_count} times.")
     global PREDICTOR_MODEL_LIST
     parallelism = min(Configuration.parallelism, cpu_count())
     _LOGGER.info(f"Training models using ProcessPool of size:{parallelism}")
@@ -183,7 +185,7 @@ if __name__ == "__main__":
     train_model(initial_run=True, data_queue=predicted_model_queue)
 
     # Set up the tornado web app
-     _LOGGER.info("Entering the Tornado web app setup.")
+    _LOGGER.info("Entering the Tornado web app setup.")
     app = make_app(predicted_model_queue)
     app.listen(8080)
     server_process = Process(target=tornado.ioloop.IOLoop.instance().start)

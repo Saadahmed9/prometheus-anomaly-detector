@@ -166,6 +166,12 @@ def train_model(initial_run=False, data_queue=None):
     PREDICTOR_MODEL_LIST = result
     data_queue.put(PREDICTOR_MODEL_LIST)
 
+def shutdown_handler(signum, frame):
+    _LOGGER.info("Received signal %s. Shutting down...", signum)
+    server_process.terminate()
+    server_process.join()
+    sys.exit(0)
+
 RETRAIN_CYCLES_BEFORE_RESTART = 3
 if __name__ == "__main__":
     # Queue to share data between the tornado server and the model training
@@ -173,17 +179,17 @@ if __name__ == "__main__":
 
     cycle_counter = 0
 
+    # Set up the tornado web app
+    app = make_app(predicted_model_queue)
+    app.listen(8080)
+    server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
+
+    # Register the signal handler
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
     while True:
         # Initial run to generate metrics, before they are exposed
         train_model(initial_run=True, data_queue=predicted_model_queue)
-
-        # Set up the tornado web app
-        app = make_app(predicted_model_queue)
-        app.listen(8080)
-        server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
-
-        # Register the signal handler
-        signal.signal(signal.SIGTERM, shutdown_handler)
 
         # Start up the server to expose the metrics.
         server_process.start()

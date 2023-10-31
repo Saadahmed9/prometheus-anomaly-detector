@@ -2,6 +2,7 @@
 import time
 import os
 import logging
+import signal
 from datetime import datetime
 from multiprocessing import Pool, Process, Queue
 from multiprocessing import cpu_count

@@ -179,14 +179,6 @@ if __name__ == "__main__":
 
     cycle_counter = 0
 
-    # Set up the tornado web app
-    app = make_app(predicted_model_queue)
-    app.listen(8080)
-    server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
-
-    # Register the signal handler
-    signal.signal(signal.SIGTERM, shutdown_handler)
-
     while True:
         app = make_app(predicted_model_queue)
         app.listen(8080)

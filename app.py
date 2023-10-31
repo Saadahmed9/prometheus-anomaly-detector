@@ -176,7 +176,7 @@ def train_model(initial_run=False, data_queue=None):
 
 if __name__ == "__main__":
     # Queue to share data between the tornado server and the model training
-     _LOGGER.info("Starting the main execution block.")
+    _LOGGER.info("Starting the main execution block.")
     predicted_model_queue = Queue()
 
     # Initial run to generate metrics, before they are exposed
